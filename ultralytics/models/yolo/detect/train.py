@@ -15,7 +15,7 @@ from ultralytics.data import build_dataloader, build_yolo_dataset
 from ultralytics.engine.trainer import BaseTrainer
 from ultralytics.models import yolo
 from ultralytics.nn.tasks import DetectionModel
-from ultralytics.utils import DEFAULT_CFG, LOGGER, RANK
+from ultralytics.utils import DEFAULT_CFG, LOGGER, RANK, ops
 from ultralytics.utils.patches import override_configs
 from ultralytics.utils.plotting import plot_images, plot_labels
 from ultralytics.utils.torch_utils import torch_distributed_zero_first, unwrap_model
@@ -121,7 +121,13 @@ class DetectionTrainer(BaseTrainer):
         for k, v in batch.items():
             if isinstance(v, torch.Tensor):
                 batch[k] = v.to(self.device, non_blocking=self.device.type == "cuda")
-        batch["img"] = batch["img"].float() / 255
+        imgs = batch["img"]
+        batch["img_dtype_str"] = str(imgs.dtype).replace("torch.", "")
+        scale = ops.get_normalization_value(imgs)
+        imgs = imgs.float()
+        if scale > 1.0:
+            imgs /= scale
+        batch["img"] = imgs
         if self.args.multi_scale:
             imgs = batch["img"]
             sz = (

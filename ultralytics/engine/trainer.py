@@ -194,6 +194,8 @@ class BaseTrainer:
             # Start console logging immediately at trainer initialization
             self.run_callbacks("on_pretrain_routine_start")
 
+        self._last_train_img_dtype = None
+
     def add_callback(self, event: str, callback):
         """Append the given callback to the event's callback list."""
         self.callbacks[event].append(callback)
@@ -411,6 +413,15 @@ class BaseTrainer:
                 # Forward
                 with autocast(self.amp):
                     batch = self.preprocess_batch(batch)
+                    if RANK in {-1, 0}:
+                        dtype_str = batch.get("img_dtype_str")
+                        if dtype_str is None:
+                            img_tensor = batch.get("img")
+                            if isinstance(img_tensor, torch.Tensor):
+                                dtype_str = str(img_tensor.dtype).replace("torch.", "")
+                        if dtype_str and dtype_str != self._last_train_img_dtype:
+                            LOGGER.info(f"Training batch image dtype: {dtype_str}")
+                            self._last_train_img_dtype = dtype_str
                     if self.args.compile:
                         # Decouple inference and loss calculations for improved compile performance
                         preds = self.model(batch["img"])

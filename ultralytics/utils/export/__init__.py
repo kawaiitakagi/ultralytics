@@ -8,6 +8,7 @@ from pathlib import Path
 import torch
 
 from ultralytics.utils import IS_JETSON, LOGGER
+from ultralytics.utils.ops import get_normalization_value
 
 from .imx import torch2imx  # noqa
 
@@ -202,7 +203,11 @@ def onnx2engine(
             def get_batch(self, names) -> list[int] | None:
                 """Get the next batch to use for calibration, as a list of device memory pointers."""
                 try:
-                    im0s = next(self.data_iter)["img"] / 255.0
+                    im0s = next(self.data_iter)["img"]
+                    scale = get_normalization_value(im0s)
+                    im0s = im0s.float()
+                    if scale > 1.0:
+                        im0s /= scale
                     im0s = im0s.to("cuda") if im0s.device.type == "cpu" else im0s
                     return [int(im0s.data_ptr())]
                 except StopIteration:

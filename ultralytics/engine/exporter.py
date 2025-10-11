@@ -110,7 +110,7 @@ from ultralytics.utils.export import onnx2engine, torch2imx, torch2onnx
 from ultralytics.utils.files import file_size, spaces_in_path
 from ultralytics.utils.metrics import batch_probiou
 from ultralytics.utils.nms import TorchNMS
-from ultralytics.utils.ops import Profile
+from ultralytics.utils.ops import Profile, get_normalization_value
 from ultralytics.utils.patches import arange_patch
 from ultralytics.utils.torch_utils import TORCH_1_11, TORCH_1_13, TORCH_2_1, TORCH_2_4, select_device
 
@@ -714,8 +714,14 @@ class Exporter:
             def transform_fn(data_item) -> np.ndarray:
                 """Quantization transform function."""
                 data_item: torch.Tensor = data_item["img"] if isinstance(data_item, dict) else data_item
-                assert data_item.dtype == torch.uint8, "Input image must be uint8 for the quantization preprocessing"
-                im = data_item.numpy().astype(np.float32) / 255.0  # uint8 to fp16/32 and 0-255 to 0.0-1.0
+                if data_item.dtype not in {torch.uint8, torch.uint16}:
+                    raise AssertionError(
+                        "Input image must be uint8 or uint16 for the quantization preprocessing"
+                    )
+                scale = get_normalization_value(data_item)
+                im = data_item.numpy().astype(np.float32)
+                if scale > 1.0:
+                    im /= scale  # convert to 0.0-1.0 range
                 return np.expand_dims(im, 0) if im.ndim == 3 else im
 
             # Generate calibration data for integer quantization

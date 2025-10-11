@@ -10,6 +10,7 @@ import torch
 
 from ultralytics.nn.modules import Detect, Pose
 from ultralytics.utils import LOGGER
+from ultralytics.utils.ops import get_normalization_value
 from ultralytics.utils.tal import make_anchors
 from ultralytics.utils.torch_utils import copy_attr
 
@@ -194,7 +195,10 @@ def torch2imx(
     def representative_dataset_gen(dataloader=dataset):
         for batch in dataloader:
             img = batch["img"]
-            img = img / 255.0
+            scale = get_normalization_value(img)
+            img = img.float()
+            if scale > 1.0:
+                img = img / scale
             yield [img]
 
     tpc = get_target_platform_capabilities(tpc_version="4.0", device_type="imx500")
