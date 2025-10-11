@@ -119,6 +119,7 @@ class LoadStreams:
         self.caps = [None] * n  # video capture objects
         self.imgs = [[] for _ in range(n)]  # images
         self.shape = [[] for _ in range(n)]  # image shapes
+        self.dtypes = [np.uint8] * n
         self.sources = [ops.clean_str(x).replace(os.sep, "_") for x in sources]  # clean source names for later
         for i, s in enumerate(sources):  # index, source
             # Start thread to read frames from video stream
@@ -149,6 +150,7 @@ class LoadStreams:
                 raise ConnectionError(f"{st}Failed to read images from {s}")
             self.imgs[i].append(im)
             self.shape[i] = im.shape
+            self.dtypes[i] = im.dtype
             self.threads[i] = Thread(target=self.update, args=([i, self.caps[i], s]), daemon=True)
             LOGGER.info(f"{st}Success ✅ ({self.frames[i]} frames of shape {w}x{h} at {self.fps[i]:.2f} FPS)")
             self.threads[i].start()
@@ -167,7 +169,7 @@ class LoadStreams:
                         cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)[..., None] if self.cv2_flag == cv2.IMREAD_GRAYSCALE else im
                     )
                     if not success:
-                        im = np.zeros(self.shape[i], dtype=np.uint8)
+                        im = np.zeros(self.shape[i], dtype=self.dtypes[i])
                         LOGGER.warning("Video stream unresponsive, please check your IP camera connection.")
                         cap.open(stream)  # re-open stream if signal was lost
                     if self.buffer:
@@ -216,7 +218,7 @@ class LoadStreams:
 
             # Get the last frame, and clear the rest from the imgs buffer
             else:
-                images.append(x.pop(-1) if x else np.zeros(self.shape[i], dtype=np.uint8))
+                images.append(x.pop(-1) if x else np.zeros(self.shape[i], dtype=self.dtypes[i]))
                 x.clear()
 
         return self.sources, images, [""] * self.bs
@@ -613,11 +615,24 @@ class LoadTensor:
             im = im.unsqueeze(0)
         if im.shape[2] % stride or im.shape[3] % stride:
             raise ValueError(s)
-        if im.max() > 1.0 + torch.finfo(im.dtype).eps:  # torch.float32 eps is 1.2e-07
+        if im.is_floating_point():
+            eps = torch.finfo(im.dtype).eps
+            if im.max() > 1.0 + eps:
+                max_val = float(im.max())
+                LOGGER.warning(
+                    f"torch.Tensor inputs should be normalized 0.0-1.0 but max value is {max_val}. Dividing input by {max_val}."
+                )
+                im = im / max_val
+            return im
+
+        scale = ops.get_normalization_value(im)
+        if scale > 1.0:
             LOGGER.warning(
-                f"torch.Tensor inputs should be normalized 0.0-1.0 but max value is {im.max()}. Dividing input by 255."
+                f"torch.Tensor inputs should be normalized 0.0-1.0 but max value is {im.max()}. Dividing input by {scale}."
             )
-            im = im.float() / 255.0
+            im = im.float() / scale
+        else:
+            im = im.float()
 
         return im
 

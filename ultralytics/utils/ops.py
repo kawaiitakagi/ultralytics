@@ -15,6 +15,32 @@ import torch.nn.functional as F
 from ultralytics.utils import NOT_MACOS14
 
 
+def get_normalization_value(im: np.ndarray | torch.Tensor | np.dtype | torch.dtype) -> float:
+    """Return the maximum value used to normalize images based on their dtype."""
+
+    if isinstance(im, torch.Tensor):
+        if im.is_floating_point():
+            return 1.0
+        return float(torch.iinfo(im.dtype).max)
+
+    if isinstance(im, torch.dtype):
+        if torch.is_floating_point(torch.empty((), dtype=im)):
+            return 1.0
+        return float(torch.iinfo(im).max)
+
+    if isinstance(im, np.ndarray):
+        if np.issubdtype(im.dtype, np.floating):
+            return 1.0
+        return float(np.iinfo(im.dtype).max)
+
+    if isinstance(im, np.dtype):
+        if np.issubdtype(im, np.floating):
+            return 1.0
+        return float(np.iinfo(im).max)
+
+    raise TypeError(f"Unsupported type for normalization value: {type(im)}")
+
+
 class Profile(contextlib.ContextDecorator):
     """
     Ultralytics Profile class for timing code execution.

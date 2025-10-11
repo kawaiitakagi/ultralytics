@@ -160,8 +160,10 @@ class BasePredictor:
             (torch.Tensor): Preprocessed image tensor of shape (N, 3, H, W).
         """
         not_tensor = not isinstance(im, torch.Tensor)
+        scale = 1.0
         if not_tensor:
             im = np.stack(self.pre_transform(im))
+            scale = ops.get_normalization_value(im)
             if im.shape[-1] == 3:
                 im = im[..., ::-1]  # BGR to RGB
             im = im.transpose((0, 3, 1, 2))  # BHWC to BCHW, (n, 3, h, w)
@@ -170,8 +172,8 @@ class BasePredictor:
 
         im = im.to(self.device)
         im = im.half() if self.model.fp16 else im.float()  # uint8 to fp16/32
-        if not_tensor:
-            im /= 255  # 0 - 255 to 0.0 - 1.0
+        if not_tensor and scale > 1.0:
+            im /= scale  # Normalize according to dtype
         return im
 
     def inference(self, im: torch.Tensor, *args, **kwargs):
