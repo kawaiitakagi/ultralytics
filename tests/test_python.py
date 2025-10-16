@@ -74,6 +74,17 @@ def test_model_profile():
     _ = model.predict(im, profile=True)
 
 
+def test_model_qat_enable():
+    """Ensure that QAT can be enabled on a freshly constructed detection model."""
+    from ultralytics.nn.tasks import DetectionModel
+
+    model = DetectionModel()
+    model.enable_qat()
+    assert model.is_qat_active()
+    preds = model(torch.randn(1, 3, 64, 64))
+    assert isinstance(preds, list)
+
+
 @pytest.mark.skipif(not IS_TMP_WRITEABLE, reason="directory is not writeable")
 def test_predict_txt():
     """Test YOLO predictions with file, directory, and pattern sources listed in a text file."""

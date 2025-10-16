@@ -158,6 +158,9 @@ class BaseTrainer:
             self.data = self.get_dataset()
 
         self.ema = None
+        self.qat = bool(getattr(self.args, "qat", False))
+        self._qat_disable_epoch = None
+        self._qat_observers_disabled = False
 
         # Optimization utils init
         self.lf = None
@@ -263,7 +266,13 @@ class BaseTrainer:
         self.set_model_attributes()
 
         # Compile model
+        if self.args.qat and self.args.compile:
+            LOGGER.warning("Disabling torch.compile as it is incompatible with QAT.")
+            self.args.compile = False
         self.model = attempt_compile(self.model, device=self.device, mode=self.args.compile)
+
+        if self.args.qat:
+            self._configure_qat_model()
 
         # Freeze layers
         freeze_list = (
@@ -289,6 +298,10 @@ class BaseTrainer:
                 v.requires_grad = True
 
         # Check AMP
+        if self.args.qat and self.args.amp:
+            LOGGER.warning("Disabling AMP because it is incompatible with QAT.")
+            self.args.amp = False
+
         self.amp = torch.tensor(self.args.amp).to(self.device)  # True or False
         if self.amp and RANK in {-1, 0}:  # Single-GPU and DDP
             callbacks_backup = callbacks.default_callbacks.copy()  # backup callbacks as check_amp() resets them
@@ -350,6 +363,48 @@ class BaseTrainer:
         self.resume_training(ckpt)
         self.scheduler.last_epoch = self.start_epoch - 1  # do not move
         self.run_callbacks("on_pretrain_routine_end")
+
+    def _configure_qat_model(self):
+        """Prepare the model for quantization-aware training and register required callbacks."""
+        if self.world_size > 1:
+            raise RuntimeError("QAT is currently supported only for single-device training.")
+
+        model = unwrap_model(self.model)
+        backend = getattr(self.args, "qat_backend", None) or "fbgemm"
+        if hasattr(model, "is_qat_active") and model.is_qat_active():
+            LOGGER.info("Loaded model already configured for QAT; reusing existing observers.")
+        else:
+            try:
+                model.enable_qat(backend=backend)
+            except Exception as exc:  # pragma: no cover - surface configuration errors
+                raise RuntimeError(f"Failed to enable QAT using backend '{backend}': {exc}") from exc
+            self.model = model.to(self.device)
+            LOGGER.info(f"Enabled QAT with backend '{backend}'.")
+
+        freeze_epochs = max(int(getattr(self.args, "qat_freeze_epoch", 0) or 0), 0)
+        self._qat_disable_epoch = (
+            max(self.epochs - freeze_epochs, 0) if freeze_epochs > 0 else None
+        )
+        if self._qat_disable_epoch is not None:
+            LOGGER.info(
+                f"QAT observers will be disabled from epoch {self._qat_disable_epoch + 1} onwards"
+                f" (last {freeze_epochs} epochs)."
+            )
+        self._qat_observers_disabled = False
+        if self._on_train_epoch_start_qat not in self.callbacks.get("on_train_epoch_start", []):
+            self.add_callback("on_train_epoch_start", self._on_train_epoch_start_qat)
+        self.qat = True
+
+    def _on_train_epoch_start_qat(self):
+        """Disable QAT observers and freeze BN statistics near the end of training."""
+        if not self.qat or self._qat_disable_epoch is None or self._qat_observers_disabled:
+            return
+        if self.epoch >= self._qat_disable_epoch:
+            model = unwrap_model(self.model)
+            if hasattr(model, "disable_qat_observers"):
+                model.disable_qat_observers()
+                self._qat_observers_disabled = True
+                LOGGER.info("Disabled QAT observers and froze BatchNorm statistics for fine-tuning.")
 
     def _do_train(self):
         """Train the model with the specified world size."""
