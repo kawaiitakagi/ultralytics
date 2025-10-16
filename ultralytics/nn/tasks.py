@@ -120,6 +120,14 @@ class BaseModel(torch.nn.Module):
         >>> model.info()  # Display model information
     """
 
+    def __init__(self):
+        """Initialize the base model and prepare optional QAT attributes."""
+        super().__init__()
+        self.quant = None
+        self.dequant = None
+        self._qat_active = False
+        self.qat_qconfig = None
+
     def forward(self, x, *args, **kwargs):
         """
         Perform forward pass of the model for either training or inference.
@@ -172,6 +180,9 @@ class BaseModel(torch.nn.Module):
         y, dt, embeddings = [], [], []  # outputs
         embed = frozenset(embed) if embed is not None else {-1}
         max_idx = max(embed)
+        if self._qat_active and self.quant is not None and isinstance(x, torch.Tensor):
+            x = self.quant(x)
+
         for m in self.model:
             if m.f != -1:  # if not from previous layer
                 x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
@@ -185,6 +196,14 @@ class BaseModel(torch.nn.Module):
                 embeddings.append(torch.nn.functional.adaptive_avg_pool2d(x, (1, 1)).squeeze(-1).squeeze(-1))  # flatten
                 if m.i == max_idx:
                     return torch.unbind(torch.cat(embeddings, 1), dim=0)
+        if self._qat_active and self.dequant is not None:
+            if isinstance(x, torch.Tensor):
+                x = self.dequant(x)
+            elif isinstance(x, (list, tuple)):
+                x = type(x)(self.dequant(_x) if isinstance(_x, torch.Tensor) else _x for _x in x)
+            elif isinstance(x, dict):
+                x = {k: self.dequant(v) if isinstance(v, torch.Tensor) else v for k, v in x.items()}
+
         return x
 
     def _predict_augment(self, x):
@@ -252,6 +271,66 @@ class BaseModel(torch.nn.Module):
             self.info(verbose=verbose)
 
         return self
+
+    def enable_qat(self, backend: str = "fbgemm"):
+        """Enable quantization-aware training for the model using the specified backend."""
+        if self._qat_active:
+            LOGGER.debug("QAT is already enabled for this model; skipping reconfiguration.")
+            return self
+
+        try:
+            from torch.ao.quantization import (  # type: ignore[attr-defined]
+                QuantStub,
+                DeQuantStub,
+                get_default_qat_qconfig,
+                prepare_qat,
+            )
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError("PyTorch quantization tooling is required to enable QAT.") from exc
+
+        backend = (backend or "fbgemm").lower()
+        supported_backends = {"fbgemm", "qnnpack"}
+        if backend not in supported_backends:
+            raise ValueError(f"Unsupported QAT backend '{backend}'. Choose from {sorted(supported_backends)}.")
+
+        torch.backends.quantized.engine = backend  # type: ignore[attr-defined]
+        qconfig = get_default_qat_qconfig(backend)
+        if qconfig is None:
+            raise RuntimeError(f"Unable to create default QAT qconfig for backend '{backend}'.")
+
+        for module in self.modules():
+            if isinstance(module, (nn.Conv2d, nn.Linear, nn.ConvTranspose2d)):
+                module.qconfig = qconfig
+
+        if self.quant is None:
+            self.quant = QuantStub()
+        self.quant.qconfig = qconfig
+
+        if self.dequant is None:
+            self.dequant = DeQuantStub()
+
+        self.train()
+        prepare_qat(self, inplace=True)
+        self._qat_active = True
+        self.qat_qconfig = qconfig
+        LOGGER.info(f"Model prepared for QAT with backend '{backend}'.")
+        return self
+
+    def disable_qat_observers(self):
+        """Disable QAT observers and freeze batch normalization statistics."""
+        if not self._qat_active:
+            return
+        try:
+            from torch.ao.quantization import disable_observer, freeze_bn_stats  # type: ignore[attr-defined]
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError("PyTorch quantization tooling is required to manage QAT observers.") from exc
+
+        disable_observer(self)
+        freeze_bn_stats(self)
+
+    def is_qat_active(self) -> bool:
+        """Return True if the model has been configured for quantization-aware training."""
+        return self._qat_active
 
     def is_fused(self, thresh=10):
         """

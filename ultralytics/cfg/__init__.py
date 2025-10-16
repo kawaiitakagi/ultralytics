@@ -200,6 +200,7 @@ CFG_INT_KEYS = frozenset(
         "line_width",
         "nbs",
         "save_period",
+        "qat_freeze_epoch",
     }
 )
 CFG_BOOL_KEYS = frozenset(
@@ -211,6 +212,7 @@ CFG_BOOL_KEYS = frozenset(
         "single_cls",
         "rect",
         "cos_lr",
+        "qat",
         "overlap_mask",
         "val",
         "save_json",
